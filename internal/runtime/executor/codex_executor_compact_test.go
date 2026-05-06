@@ -77,3 +77,45 @@ func TestCodexExecutorCompactAddsDefaultInstructions(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexExecutorCompactStripsUnsupportedFields(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction"}`))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model: "gpt-5.4",
+		Payload: []byte(`{
+			"model":"gpt-5.4",
+			"input":"hello",
+			"max_output_tokens":123,
+			"max_completion_tokens":234,
+			"temperature":0.7,
+			"top_p":0.9
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+
+	for _, key := range []string{"max_output_tokens", "max_completion_tokens", "temperature", "top_p"} {
+		if gjson.GetBytes(gotBody, key).Exists() {
+			t.Fatalf("expected %s to be removed from compact body, got %s", key, string(gotBody))
+		}
+	}
+}

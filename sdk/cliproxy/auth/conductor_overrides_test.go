@@ -851,3 +851,34 @@ func TestManager_RequestScopedNotFoundStopsRetryWithoutSuspendingAuth(t *testing
 		t.Fatalf("expected request-scoped 404 to avoid bad auth model cooldown state, got %#v", state)
 	}
 }
+
+func TestIsRetryableStatus(t *testing.T) {
+	tests := []struct {
+		status   int
+		expected bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusForbidden, true},
+		{http.StatusRequestTimeout, true},
+		{http.StatusTooManyRequests, true},
+		{http.StatusInternalServerError, true},
+		{http.StatusBadGateway, true},
+		{http.StatusServiceUnavailable, true},
+		{http.StatusGatewayTimeout, true},
+		{http.StatusOK, false},
+		{http.StatusMovedPermanently, false},
+		{http.StatusNotFound, false},
+		{http.StatusMethodNotAllowed, false},
+		{http.StatusUnauthorized, false},
+		{http.StatusPaymentRequired, false},
+		{http.StatusUnprocessableEntity, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			if got := isRetryableStatus(tc.status); got != tc.expected {
+				t.Fatalf("isRetryableStatus(%d) = %v, want %v", tc.status, got, tc.expected)
+			}
+		})
+	}
+}

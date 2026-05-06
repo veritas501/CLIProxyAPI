@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -142,24 +143,19 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			action = "countTokens"
 		}
 	}
-	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, action)
-	if opts.Alt != "" && action != "countTokens" {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+	reqURL, isCustomEndpoint := resolveGeminiURL(auth, baseModel, action)
+	if !isCustomEndpoint && opts.Alt != "" && action != "countTokens" {
+		reqURL = reqURL + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("x-goog-api-key", apiKey)
-	} else if bearer != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+bearer)
-	}
+	applyGeminiAuthHeader(httpReq, isCustomEndpoint, apiKey, bearer)
 	applyGeminiHeaders(httpReq, auth)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -168,7 +164,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		authType, authValue = auth.AccountInfo()
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
+		URL:       reqURL,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
 		Body:      body,
@@ -244,26 +240,25 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, requestPath)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 
-	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "streamGenerateContent")
-	if opts.Alt == "" {
-		url = url + "?alt=sse"
+	reqURL, isCustomEndpoint := resolveGeminiURL(auth, baseModel, "streamGenerateContent")
+	if isCustomEndpoint {
+		body, _ = sjson.SetBytes(body, "stream", true)
 	} else {
-		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
+		if opts.Alt == "" {
+			reqURL = reqURL + "?alt=sse"
+		} else {
+			reqURL = reqURL + fmt.Sprintf("?$alt=%s", opts.Alt)
+		}
 	}
 
 	body, _ = sjson.DeleteBytes(body, "session_id")
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("x-goog-api-key", apiKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+bearer)
-	}
+	applyGeminiAuthHeader(httpReq, isCustomEndpoint, apiKey, bearer)
 	applyGeminiHeaders(httpReq, auth)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -272,7 +267,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		authType, authValue = auth.AccountInfo()
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
+		URL:       reqURL,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
 		Body:      body,
@@ -373,21 +368,16 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	translatedReq, _ = sjson.DeleteBytes(translatedReq, "safetySettings")
 	translatedReq, _ = sjson.SetBytes(translatedReq, "model", baseModel)
 
-	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, baseModel, "countTokens")
+	reqURL, isCustomEndpoint := resolveGeminiURL(auth, baseModel, "countTokens")
 
 	requestBody := bytes.NewReader(translatedReq)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, requestBody)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, requestBody)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("x-goog-api-key", apiKey)
-	} else {
-		httpReq.Header.Set("Authorization", "Bearer "+bearer)
-	}
+	applyGeminiAuthHeader(httpReq, isCustomEndpoint, apiKey, bearer)
 	applyGeminiHeaders(httpReq, auth)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -396,7 +386,7 @@ func (e *GeminiExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		authType, authValue = auth.AccountInfo()
 	}
 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
-		URL:       url,
+		URL:       reqURL,
 		Method:    http.MethodPost,
 		Headers:   httpReq.Header.Clone(),
 		Body:      translatedReq,
@@ -475,6 +465,40 @@ func resolveGeminiBaseURL(auth *cliproxyauth.Auth) string {
 		return glEndpoint
 	}
 	return base
+}
+
+// resolveGeminiURL builds the full request URL and detects custom endpoint mode.
+func resolveGeminiURL(auth *cliproxyauth.Auth, model, action string) (string, bool) {
+	base := resolveGeminiBaseURL(auth)
+	parsed, err := url.Parse(base)
+	if err == nil && parsed.Path != "" && parsed.Path != "/" {
+		return base, true
+	}
+	return fmt.Sprintf("%s/%s/models/%s:%s", base, glAPIVersion, model, action), false
+}
+
+// applyGeminiAuthHeader applies provider auth headers for standard or custom endpoints.
+func applyGeminiAuthHeader(req *http.Request, isCustomEndpoint bool, apiKey, bearer string) {
+	if isCustomEndpoint {
+		token := bearer
+		if token == "" {
+			token = apiKey
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Del("x-goog-api-key")
+		return
+	}
+	if apiKey != "" {
+		req.Header.Set("x-goog-api-key", apiKey)
+		req.Header.Del("Authorization")
+		return
+	}
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Del("x-goog-api-key")
+	}
 }
 
 func (e *GeminiExecutor) resolveGeminiConfig(auth *cliproxyauth.Auth) *config.GeminiKey {

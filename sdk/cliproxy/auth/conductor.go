@@ -2015,7 +2015,7 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		}
 		return wait, true
 	}
-	if status != http.StatusTooManyRequests {
+	if !isRetryableStatus(status) {
 		return 0, false
 	}
 	if !m.retryAllowed(attempt, providers) {
@@ -2026,6 +2026,23 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false
 	}
 	return *retryAfter, true
+}
+
+// isRetryableStatus returns true if the HTTP status code is retryable.
+func isRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest,
+		http.StatusForbidden,
+		http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func waitForCooldown(ctx context.Context, wait time.Duration) error {
